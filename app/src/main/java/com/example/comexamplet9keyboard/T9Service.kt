@@ -39,10 +39,18 @@ class T9Service : InputMethodService() {
     private val tr = Locale("tr", "TR")
     private val handler = Handler(Looper.getMainLooper())
 
-    private val BG = Color.parseColor("#212121")
-    private val KEY = Color.parseColor("#2E3236")
-    private val ACCENT = Color.parseColor("#5FD3C5")
-    private val DIM = Color.parseColor("#262829")
+    // Tema renkleri (applyTheme ile Koyu / Beyaz arasında değişir)
+    private var BG = Color.parseColor("#212121")           // klavye arka planı
+    private var KEY = Color.parseColor("#2E3236")          // tuş rengi
+    private var ACCENT = Color.parseColor("#5FD3C5")       // vurgu (yeşil-mavi)
+    private var DIM = Color.parseColor("#262829")          // koyu tuş (ok, silme vb.)
+    private var TXT = Color.WHITE                          // tuş ve yazı rengi
+    private var SUBTXT = Color.parseColor("#8A8E92")       // küçük etiketler, boşluk tuşu yazısı
+    private var ICON = Color.LTGRAY                        // üst şerit simgeleri
+    private var SELBG = Color.parseColor("#3F6B66")        // "Seç" açıkken tuş rengi
+    private var SHIFTOFF = Color.parseColor("#7FA8A3")     // ⇧ kapalıyken
+    private var lightTheme = false
+    private lateinit var themePage: View
 
     // ---------- T9 harf grupları ----------
     private val groups = mapOf(
@@ -143,6 +151,8 @@ class T9Service : InputMethodService() {
 
     override fun onCreate() {
         super.onCreate()
+        lightTheme = prefs.getBoolean("theme_light", false)
+        applyTheme()
         loadDictionary()
         loadUserData()
         try { clipboard.addPrimaryClipChangedListener(clipListener) } catch (e: Exception) { }
@@ -871,7 +881,7 @@ class T9Service : InputMethodService() {
             }
             c.addView(TextView(this).apply { text = "⊕"; textSize = 28f; setTextColor(ACCENT) })
             c.addView(TextView(this).apply {
-                text = chip; textSize = 19f; setTextColor(Color.WHITE); setPadding(dp(8), 0, 0, 0)
+                text = chip; textSize = 19f; setTextColor(TXT); setPadding(dp(8), 0, 0, 0)
             })
             suggestRow.addView(c, LinearLayout.LayoutParams(-2, MATCH_PARENT))
         }
@@ -882,7 +892,7 @@ class T9Service : InputMethodService() {
         suggestions.forEachIndexed { i, s ->
             val tv = TextView(this).apply {
                 text = shown(s); textSize = if (letterMode) 24f else 19f; gravity = Gravity.CENTER
-                setTextColor(if (i == 0 && composingActive() && !(chipFirst && chip != null && !letterMode)) ACCENT else Color.WHITE)
+                setTextColor(if (i == 0 && composingActive() && !(chipFirst && chip != null && !letterMode)) ACCENT else TXT)
                 setPadding(dp(16), 0, dp(16), 0)
                 setOnClickListener { if (letterMode) pickCandidateLetter(s[0]) else pickSuggestion(s) }
             }
@@ -894,7 +904,7 @@ class T9Service : InputMethodService() {
 
     private fun updateShiftLook() {
         shiftView?.text = when { caps -> "⇪"; shift -> "⬆"; else -> "⇧" }
-        shiftView?.setTextColor(if (caps || shift) ACCENT else Color.parseColor("#7FA8A3"))
+        shiftView?.setTextColor(if (caps || shift) ACCENT else SHIFTOFF)
         updateKeyLabels()
     }
 
@@ -929,7 +939,7 @@ class T9Service : InputMethodService() {
     }
 
     private fun updatePredLook() {
-        predView?.setTextColor(if (predictive) ACCENT else Color.GRAY)
+        predView?.setTextColor(if (predictive) ACCENT else SUBTXT)
     }
 
     // Sol sütundan harf seçimi: tahmin modunda soldan sağa sırayla, çoklu basışta bekleyen harf için
@@ -995,7 +1005,7 @@ class T9Service : InputMethodService() {
         if (::hideOrReturnTool.isInitialized) {
             val isReturn = (target !== t9Page)
             hideOrReturnTool.text = if (isReturn) "↩" else "⌄"
-            hideOrReturnTool.setTextColor(if (isReturn) ACCENT else Color.LTGRAY)
+            hideOrReturnTool.setTextColor(if (isReturn) ACCENT else ICON)
         }
         if (target === clipPage) refreshClips()
     }
@@ -1033,18 +1043,18 @@ class T9Service : InputMethodService() {
         f.background = GradientDrawable().apply { setColor(bg); cornerRadius = dp(6).toFloat() }
         val main = TextView(this).apply {
             text = label; textSize = size; gravity = Gravity.CENTER
-            setTextColor(if (accent) ACCENT else Color.WHITE)
+            setTextColor(if (accent) ACCENT else TXT)
         }
         f.tag = main
         f.addView(main, FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT))
         if (sub != null) {
-            val s = TextView(this).apply { text = sub; textSize = 11f; setTextColor(Color.GRAY) }
+            val s = TextView(this).apply { text = sub; textSize = 11f; setTextColor(SUBTXT) }
             f.addView(s, FrameLayout.LayoutParams(-2, -2, Gravity.BOTTOM or Gravity.END).apply {
                 setMargins(0, 0, dp(6), dp(3))
             })
         }
         if (topSub != null) {
-            val ts = TextView(this).apply { text = topSub; textSize = 12f; setTextColor(Color.GRAY) }
+            val ts = TextView(this).apply { text = topSub; textSize = 12f; setTextColor(SUBTXT) }
             f.addView(ts, FrameLayout.LayoutParams(-2, -2, Gravity.TOP or Gravity.END).apply {
                 setMargins(0, dp(4), dp(6), 0)
             })
@@ -1101,7 +1111,7 @@ class T9Service : InputMethodService() {
             if (autoSpaced && !composingActive()) autoSpaced = false
             else commitWord(true)
         }
-        val gray = Color.parseColor("#8A8E92")
+        val gray = SUBTXT
         (k.tag as? TextView)?.apply {
             setTextColor(gray)
             if (label.isNotEmpty()) {
@@ -1346,7 +1356,7 @@ class T9Service : InputMethodService() {
         val titleRecent = TextView(this).apply {
             text = "Son kullanılanlar"
             textSize = 13f
-            setTextColor(Color.GRAY)
+            setTextColor(SUBTXT)
             setPadding(dp(16), dp(10), dp(16), dp(2))
         }
         col.addView(titleRecent)
@@ -1358,7 +1368,7 @@ class T9Service : InputMethodService() {
         val titleAll = TextView(this).apply {
             text = "Yüz ifadeleri ve insanlar"
             textSize = 13f
-            setTextColor(Color.GRAY)
+            setTextColor(SUBTXT)
             setPadding(dp(16), dp(14), dp(16), dp(2))
         }
         col.addView(titleAll)
@@ -1413,8 +1423,8 @@ class T9Service : InputMethodService() {
 
     private fun updateSelLook() {
         if (!::selKey.isInitialized) return
-        (selKey.background as? GradientDrawable)?.setColor(if (selectMode) Color.parseColor("#3F6B66") else KEY)
-        (selKey.tag as? TextView)?.setTextColor(if (selectMode) ACCENT else Color.WHITE)
+        (selKey.background as? GradientDrawable)?.setColor(if (selectMode) SELBG else KEY)
+        (selKey.tag as? TextView)?.setTextColor(if (selectMode) ACCENT else TXT)
     }
 
     private fun buildCursorPage(): View {
@@ -1589,7 +1599,7 @@ class T9Service : InputMethodService() {
         val header = TextView(this).apply {
             text = "+   YENİ OLUŞTUR"
             textSize = 17f
-            setTextColor(Color.WHITE)
+            setTextColor(TXT)
             gravity = Gravity.CENTER_VERTICAL
             setPadding(dp(18), 0, dp(16), 0)
             setOnClickListener { openClipEditor(null, false) }
@@ -1633,13 +1643,13 @@ class T9Service : InputMethodService() {
                     text = iconText
                     textSize = 28f
                     gravity = Gravity.CENTER
-                    setTextColor(Color.WHITE)
+                    setTextColor(TXT)
                 }
                 val label = TextView(context).apply {
                     text = titleText
                     textSize = 12f
                     gravity = Gravity.CENTER
-                    setTextColor(Color.LTGRAY)
+                    setTextColor(ICON)
                     setPadding(0, dp(6), 0, 0)
                 }
                 onLabelCreated?.invoke(label)
@@ -1654,7 +1664,7 @@ class T9Service : InputMethodService() {
             gravity = Gravity.CENTER_VERTICAL
         }
         val tTemalar = makeTile("👕", "Temalar", {
-            android.widget.Toast.makeText(this, "Varsayılan Koyu Tema devrede", android.widget.Toast.LENGTH_SHORT).show()
+            showPage(themePage)
         })
         val tSes = makeTile("🎙", "Ses", {
             try {
@@ -1686,13 +1696,13 @@ class T9Service : InputMethodService() {
             predictive = !predictive
             updatePredLook()
             predLabel?.text = if (predictive) "Tahmin AÇIK" else "Tahmin KAPALI"
-            predLabel?.setTextColor(if (predictive) ACCENT else Color.LTGRAY)
+            predLabel?.setTextColor(if (predictive) ACCENT else ICON)
             val ic = currentInputConnection
             if (seq.isNotEmpty() && ic != null && attach == null) refreshPredictive(ic) else updateSuggestions()
             android.widget.Toast.makeText(this, if (predictive) "Tahmin AÇIK" else "Tahmin KAPALI", android.widget.Toast.LENGTH_SHORT).show()
         }, onLabelCreated = { lbl ->
             predLabel = lbl
-            lbl.setTextColor(if (predictive) ACCENT else Color.LTGRAY)
+            lbl.setTextColor(if (predictive) ACCENT else ICON)
         })
         val tDil = makeTile("🌐", "Dil", {
             (getSystemService(INPUT_METHOD_SERVICE) as InputMethodManager).showInputMethodPicker()
@@ -1727,6 +1737,109 @@ class T9Service : InputMethodService() {
         return page
     }
 
+    // ---------- Temalar (Koyu / Beyaz) ----------
+
+    private fun applyTheme() {
+        if (lightTheme) {
+            BG = Color.parseColor("#E4E7EB")
+            KEY = Color.parseColor("#FFFFFF")
+            DIM = Color.parseColor("#D3D8DD")
+            ACCENT = Color.parseColor("#00897B")
+            TXT = Color.parseColor("#202124")
+            SUBTXT = Color.parseColor("#6F757A")
+            ICON = Color.parseColor("#5F6368")
+            SELBG = Color.parseColor("#B2DFDB")
+            SHIFTOFF = Color.parseColor("#5FA79D")
+        } else {
+            BG = Color.parseColor("#212121")
+            KEY = Color.parseColor("#2E3236")
+            DIM = Color.parseColor("#262829")
+            ACCENT = Color.parseColor("#5FD3C5")
+            TXT = Color.WHITE
+            SUBTXT = Color.parseColor("#8A8E92")
+            ICON = Color.LTGRAY
+            SELBG = Color.parseColor("#3F6B66")
+            SHIFTOFF = Color.parseColor("#7FA8A3")
+        }
+    }
+
+    // Alt gezinme çubuğu simgeleri: beyaz temada koyu, koyu temada açık görünsün
+    private fun applyNavBarAppearance() {
+        try {
+            val w = window?.window ?: return
+            androidx.core.view.WindowCompat.getInsetsController(w, w.decorView).isAppearanceLightNavigationBars = lightTheme
+        } catch (e: Exception) { }
+    }
+
+    private fun setLightTheme(light: Boolean) {
+        if (lightTheme == light) return
+        lightTheme = light
+        prefs.edit().putBoolean("theme_light", light).apply()
+        applyTheme()
+        // Bütün görünümü yeni renklerle baştan kur, tema sayfasında kal
+        setInputView(onCreateInputView())
+        showPage(themePage)
+        android.widget.Toast.makeText(this, if (light) "Beyaz tema" else "Koyu tema", android.widget.Toast.LENGTH_SHORT).show()
+    }
+
+    private fun buildThemePage(): View {
+        val page = FrameLayout(this)
+        val row = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER
+            setPadding(dp(16), dp(12), dp(16), dp(12))
+        }
+        fun card(name: String, light: Boolean): View {
+            val selected = lightTheme == light
+            val pBg = Color.parseColor(if (light) "#E4E7EB" else "#212121")
+            val pKey = Color.parseColor(if (light) "#FFFFFF" else "#2E3236")
+            val box = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                gravity = Gravity.CENTER
+                setPadding(dp(8), dp(8), dp(8), dp(8))
+                background = GradientDrawable().apply {
+                    setColor(Color.TRANSPARENT)
+                    cornerRadius = dp(10).toFloat()
+                    if (selected) setStroke(dp(2), ACCENT)
+                }
+                setOnClickListener { setLightTheme(light) }
+            }
+            // Küçük klavye önizlemesi
+            val preview = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                setPadding(dp(6), dp(6), dp(6), dp(6))
+                background = GradientDrawable().apply {
+                    setColor(pBg)
+                    cornerRadius = dp(8).toFloat()
+                    setStroke(dp(1), Color.GRAY)
+                }
+            }
+            for (r in 0 until 3) {
+                val line = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+                for (c in 0 until 4) {
+                    val k = View(this).apply {
+                        background = GradientDrawable().apply { setColor(pKey); cornerRadius = dp(3).toFloat() }
+                    }
+                    line.addView(k, LinearLayout.LayoutParams(0, dp(16), 1f).apply { setMargins(dp(2), dp(2), dp(2), dp(2)) })
+                }
+                preview.addView(line, LinearLayout.LayoutParams(MATCH_PARENT, -2))
+            }
+            box.addView(preview, LinearLayout.LayoutParams(dp(130), -2))
+            box.addView(TextView(this).apply {
+                text = if (selected) "✓ $name" else name
+                textSize = 15f
+                gravity = Gravity.CENTER
+                setTextColor(if (selected) ACCENT else TXT)
+                setPadding(0, dp(8), 0, 0)
+            })
+            return box
+        }
+        row.addView(card("Koyu", false), LinearLayout.LayoutParams(0, -2, 1f))
+        row.addView(card("Beyaz", true), LinearLayout.LayoutParams(0, -2, 1f))
+        page.addView(row, FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT))
+        return page
+    }
+
     // =====================================================
     //  Ana görünüm
     // =====================================================
@@ -1752,7 +1865,7 @@ class T9Service : InputMethodService() {
         iconBar = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         fun tool(txt: String, f: () -> Unit) = TextView(this).apply {
             text = txt; textSize = 22f; gravity = Gravity.CENTER
-            setTextColor(Color.LTGRAY); setOnClickListener { f() }
+            setTextColor(ICON); setOnClickListener { f() }
         }
         val hideBtn = tool("⌄") {
             if (::t9Page.isInitialized && t9Page.visibility != View.VISIBLE) {
@@ -1778,7 +1891,7 @@ class T9Service : InputMethodService() {
         suggestScroll.addView(suggestRow, FrameLayout.LayoutParams(-2, MATCH_PARENT))
         closeBtn = TextView(this).apply {
             text = "✕"; textSize = 20f; gravity = Gravity.CENTER
-            setTextColor(Color.LTGRAY); setOnClickListener { dismissBar() }
+            setTextColor(ICON); setOnClickListener { dismissBar() }
         }
         suggestBox = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -1799,7 +1912,8 @@ class T9Service : InputMethodService() {
         cursorPage = buildCursorPage()
         clipPage = buildClipPage()
         settingsPage = buildSettingsPage()
-        pages = listOf(t9Page, sym1, sym2, emojiPage, cursorPage, clipPage, settingsPage)
+        themePage = buildThemePage()
+        pages = listOf(t9Page, sym1, sym2, emojiPage, cursorPage, clipPage, settingsPage, themePage)
         val content = FrameLayout(this)
         contentLayoutView = content
         pages.forEach { content.addView(it, FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT)) }
@@ -1819,6 +1933,7 @@ class T9Service : InputMethodService() {
         outer.addView(kbFrame, FrameLayout.LayoutParams(MATCH_PARENT, -2, Gravity.BOTTOM).apply {
             bottomMargin = prefs.getInt("kb_lift", 0).coerceIn(0, dp(200))
         })
+        applyNavBarAppearance()
         return outer
     }
 
@@ -1919,7 +2034,7 @@ class T9Service : InputMethodService() {
             background = GradientDrawable().apply { setColor(bg); cornerRadius = dp(6).toFloat() }
             setOnClickListener { f() }
         }
-        buttons.addView(btn("Sıfırla", KEY, Color.WHITE) {
+        buttons.addView(btn("Sıfırla", KEY, TXT) {
             prefs.edit().remove("kb_height").remove("kb_ml").remove("kb_mr").remove("kb_lift").apply()
             content.layoutParams = content.layoutParams.apply { height = dp(4 * 58) }
             content.requestLayout()
