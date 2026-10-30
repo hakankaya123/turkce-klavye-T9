@@ -123,6 +123,7 @@ class T9Service : InputMethodService() {
     private lateinit var cursorPage: View
     private lateinit var clipPage: View
     private lateinit var settingsPage: View
+    private lateinit var numericPadPage: View
     private lateinit var clipLeft: LinearLayout
     private lateinit var clipRight: LinearLayout
     private lateinit var selKey: FrameLayout
@@ -134,7 +135,7 @@ class T9Service : InputMethodService() {
     private val clipboard by lazy { getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager }
     private val clipListener = ClipboardManager.OnPrimaryClipChangedListener { captureClip(true) }
     private var predView: TextView? = null
-    private var shiftView: TextView? = null
+    private var shiftIcon: IconView? = null
 
     private val confirmRunnable = Runnable { confirmPending(); updateSuggestions() }
     private val symRunnable = Runnable {
@@ -166,7 +167,15 @@ class T9Service : InputMethodService() {
     override fun onStartInputView(info: EditorInfo?, restarting: Boolean) {
         super.onStartInputView(info, restarting)
         resetState()
-        if (::pages.isInitialized) showPage(t9Page)
+        if (::pages.isInitialized) {
+            val t = info?.inputType ?: 0
+            val isNumeric = (t and InputType.TYPE_MASK_CLASS) == InputType.TYPE_CLASS_NUMBER ||
+                            (t and InputType.TYPE_MASK_CLASS) == InputType.TYPE_CLASS_PHONE ||
+                            (t and InputType.TYPE_TEXT_VARIATION_PASSWORD) != 0 ||
+                            (t and InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD) != 0 ||
+                            (t and InputType.TYPE_TEXT_VARIATION_WEB_PASSWORD) != 0
+            showPage(if (isNumeric) numericPadPage else t9Page)
+        }
     }
 
     override fun onFinishInput() {
@@ -756,7 +765,14 @@ class T9Service : InputMethodService() {
         updateSuggestions()
     }
 
-    private fun enterKey(): View = key("↵", accent = true, onLong = { editorAction() }) { enter() }
+    private fun enterKey(): View {
+        val k = key("", accent = true, onLong = { editorAction() }) { enter() }
+        k.addView(
+            IconView(this, IconView.ENTER, ACCENT, dp(3).toFloat()),
+            FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT)
+        )
+        return k
+    }
 
     // Üst çubuktan seçim: sonuna boşluk koymaz, yeni bağımsız kelimeye hazırlar
     private fun pickSuggestion(s: String) {
@@ -903,8 +919,10 @@ class T9Service : InputMethodService() {
     }
 
     private fun updateShiftLook() {
-        shiftView?.text = when { caps -> "⇪"; shift -> "⬆"; else -> "⇧" }
-        shiftView?.setTextColor(if (caps || shift) ACCENT else SHIFTOFF)
+        shiftIcon?.setLook(
+            when { caps -> IconView.SHIFT_CAPS; shift -> IconView.SHIFT_ON; else -> IconView.SHIFT_OFF },
+            if (caps || shift) ACCENT else SHIFTOFF
+        )
         updateKeyLabels()
     }
 
@@ -1129,7 +1147,7 @@ class T9Service : InputMethodService() {
             }
         }
         k.addView(
-            IconView(this, IconView.MIC, gray, dp(1).toFloat() * 1.6f),
+            IconView(this, IconView.MIC, if (lightTheme) Color.BLACK else Color.WHITE, dp(2).toFloat()),
             FrameLayout.LayoutParams(dp(24), dp(24), Gravity.TOP or Gravity.END).apply {
                 topMargin = dp(6)
                 rightMargin = dp(8)
@@ -1182,8 +1200,10 @@ class T9Service : InputMethodService() {
         predView = pk.tag as TextView
         updatePredLook()
         add(right, pk, 1f)
-        val sk = key("⇧", accent = true, size = 26f) { onShiftTap() }
-        shiftView = sk.tag as TextView
+        val sk = key("", accent = true) { onShiftTap() }
+        val shiftIc = IconView(this, IconView.SHIFT_OFF, SHIFTOFF, dp(3).toFloat())
+        sk.addView(shiftIc, FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT))
+        shiftIcon = shiftIc
         updateShiftLook()
         add(right, sk, 1f)
         add(main, right, 0.65f)
@@ -1246,6 +1266,38 @@ class T9Service : InputMethodService() {
         add(b, key("2/2", accent = true) { showPage(sym1) }, 1.5f)
         add(b, enterKey(), 1.5f)
         add(page, b, 1f)
+        return page
+    }
+
+    private fun buildNumericPadPage(): View {
+        val page = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        val rows = listOf(
+            listOf("+", "1", "2", "3", "⌫"),
+            listOf("-", "4", "5", "6", "↵"),
+            listOf(".", "7", "8", "9", "-"),
+            listOf("/", "*", "0", "#", "Bitti")
+        )
+        rows.forEach { r ->
+            val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+            r.forEach { symbol ->
+                val w = if (symbol == "Bitti") 1.3f else 1f
+                val btn = when (symbol) {
+                    "⌫" -> key("⌫", accent = true, repeat = true) { backspace() }
+                    "↵" -> key("↵", accent = true) { enter() }
+                    "Bitti" -> key("Bitti", accent = true, size = 18f) {
+                        val action = currentInputEditorInfo?.imeOptions?.and(EditorInfo.IME_MASK_ACTION)
+                        if (action != null && action != EditorInfo.IME_ACTION_NONE && action != EditorInfo.IME_ACTION_UNSPECIFIED) {
+                            currentInputConnection?.performEditorAction(action)
+                        } else {
+                            requestHideSelf(0)
+                        }
+                    }
+                    else -> key(symbol, size = 24f) { typeText(symbol) }
+                }
+                add(row, btn, w)
+            }
+            add(page, row, 1f)
+        }
         return page
     }
 
@@ -1913,7 +1965,8 @@ class T9Service : InputMethodService() {
         clipPage = buildClipPage()
         settingsPage = buildSettingsPage()
         themePage = buildThemePage()
-        pages = listOf(t9Page, sym1, sym2, emojiPage, cursorPage, clipPage, settingsPage, themePage)
+        numericPadPage = buildNumericPadPage()
+        pages = listOf(t9Page, sym1, sym2, emojiPage, cursorPage, clipPage, settingsPage, themePage, numericPadPage)
         val content = FrameLayout(this)
         contentLayoutView = content
         pages.forEach { content.addView(it, FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT)) }
@@ -2133,7 +2186,7 @@ class T9Service : InputMethodService() {
 }
 
 // Ok ve boşluk simgeleri (yazı karakteri yerine çizilir, her telefonda aynı görünür)
-private class IconView(ctx: Context, private val kind: Int, color: Int, strokePx: Float) : View(ctx) {
+private class IconView(ctx: Context, private var kind: Int, color: Int, strokePx: Float) : View(ctx) {
     private val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         this.color = color
         style = Paint.Style.STROKE
@@ -2142,21 +2195,81 @@ private class IconView(ctx: Context, private val kind: Int, color: Int, strokePx
         strokeJoin = Paint.Join.ROUND
     }
 
+    private val fillPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        this.color = color
+        style = Paint.Style.FILL
+    }
+
+    // Simgenin türünü ve rengini değiştirir (ör. ⇧ tuşu: kapalı / açık / sabit)
+    fun setLook(newKind: Int, newColor: Int) {
+        kind = newKind
+        paint.color = newColor
+        fillPaint.color = newColor
+        invalidate()
+    }
+
+    // Mikrofon: kapsülün içi dolu
     private fun drawMic(canvas: Canvas, cx: Float, cy: Float) {
         val m = minOf(width, height).toFloat()
-        canvas.drawRoundRect(
-            RectF(cx - 0.17f * m, cy - 0.42f * m, cx + 0.17f * m, cy + 0.06f * m),
-            0.17f * m, 0.17f * m, paint
-        )
+        val capsule = RectF(cx - 0.17f * m, cy - 0.42f * m, cx + 0.17f * m, cy + 0.06f * m)
+        canvas.drawRoundRect(capsule, 0.17f * m, 0.17f * m, fillPaint)
+        canvas.drawRoundRect(capsule, 0.17f * m, 0.17f * m, paint)
         canvas.drawArc(RectF(cx - 0.30f * m, cy - 0.24f * m, cx + 0.30f * m, cy + 0.26f * m), 20f, 140f, false, paint)
         canvas.drawLine(cx, cy + 0.26f * m, cx, cy + 0.42f * m, paint)
         canvas.drawLine(cx - 0.12f * m, cy + 0.42f * m, cx + 0.12f * m, cy + 0.42f * m, paint)
     }
 
+    // Büyük harf oku: kalın çizgili (kapalı), dolu (açık) ya da dolu + altında çizgi (sabit büyük harf)
+    private fun drawShift(canvas: Canvas, cx: Float, cy: Float, filled: Boolean, caps: Boolean) {
+        val m = minOf(width, height).toFloat() * 0.6f
+        val dy = if (caps) -0.06f * m else 0f
+        val p = Path().apply {
+            moveTo(cx, cy - 0.34f * m + dy)
+            lineTo(cx - 0.30f * m, cy + dy)
+            lineTo(cx - 0.13f * m, cy + dy)
+            lineTo(cx - 0.13f * m, cy + 0.26f * m + dy)
+            lineTo(cx + 0.13f * m, cy + 0.26f * m + dy)
+            lineTo(cx + 0.13f * m, cy + dy)
+            lineTo(cx + 0.30f * m, cy + dy)
+            close()
+        }
+        if (filled) canvas.drawPath(p, fillPaint)
+        canvas.drawPath(p, paint)
+        if (caps) {
+            canvas.drawRoundRect(
+                RectF(cx - 0.13f * m, cy + 0.29f * m, cx + 0.13f * m, cy + 0.37f * m),
+                0.03f * m, 0.03f * m, fillPaint
+            )
+        }
+    }
+
+    // Alt satıra geç oku (↵): kalın ve büyük
+    private fun drawEnter(canvas: Canvas, cx: Float, cy: Float) {
+        val m = minOf(width, height).toFloat()
+        val line = Path().apply {
+            moveTo(cx + 0.26f * m, cy - 0.22f * m)
+            lineTo(cx + 0.26f * m, cy + 0.06f * m)
+            lineTo(cx - 0.24f * m, cy + 0.06f * m)
+        }
+        canvas.drawPath(line, paint)
+        val head = Path().apply {
+            moveTo(cx - 0.06f * m, cy - 0.16f * m)
+            lineTo(cx - 0.26f * m, cy + 0.06f * m)
+            lineTo(cx - 0.06f * m, cy + 0.28f * m)
+        }
+        canvas.drawPath(head, paint)
+    }
+
     override fun onDraw(canvas: Canvas) {
         val cx = width / 2f
         val cy = height / 2f
-        if (kind == MIC) { drawMic(canvas, cx, cy); return }
+        when (kind) {
+            MIC -> { drawMic(canvas, cx, cy); return }
+            SHIFT_OFF -> { drawShift(canvas, cx, cy, false, false); return }
+            SHIFT_ON -> { drawShift(canvas, cx, cy, true, false); return }
+            SHIFT_CAPS -> { drawShift(canvas, cx, cy, true, true); return }
+            ENTER -> { drawEnter(canvas, cx, cy); return }
+        }
         val r = minOf(width, height) * 0.16f
         val p = Path()
         when (kind) {
@@ -2179,6 +2292,10 @@ private class IconView(ctx: Context, private val kind: Int, color: Int, strokePx
         const val RIGHT = 3
         const val SPACE = 4
         const val MIC = 5
+        const val SHIFT_OFF = 6
+        const val SHIFT_ON = 7
+        const val SHIFT_CAPS = 8
+        const val ENTER = 9
     }
 }
 
