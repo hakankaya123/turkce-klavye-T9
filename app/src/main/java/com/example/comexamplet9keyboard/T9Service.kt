@@ -169,13 +169,36 @@ class T9Service : InputMethodService() {
         resetState()
         if (::pages.isInitialized) {
             val t = info?.inputType ?: 0
-            val isNumeric = (t and InputType.TYPE_MASK_CLASS) == InputType.TYPE_CLASS_NUMBER ||
-                            (t and InputType.TYPE_MASK_CLASS) == InputType.TYPE_CLASS_PHONE ||
-                            (t and InputType.TYPE_TEXT_VARIATION_PASSWORD) != 0 ||
-                            (t and InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD) != 0 ||
-                            (t and InputType.TYPE_TEXT_VARIATION_WEB_PASSWORD) != 0
+            val cls = t and InputType.TYPE_MASK_CLASS
+            val variation = t and InputType.TYPE_MASK_VARIATION
+            val isNumberPassword = cls == InputType.TYPE_CLASS_NUMBER && variation == InputType.TYPE_NUMBER_VARIATION_PASSWORD
+            val isTextPassword = cls == InputType.TYPE_CLASS_TEXT && (
+                variation == InputType.TYPE_TEXT_VARIATION_PASSWORD ||
+                variation == InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD ||
+                variation == InputType.TYPE_TEXT_VARIATION_WEB_PASSWORD
+            )
+
+            val pkg = info?.packageName?.lowercase(tr) ?: ""
+            val hint = info?.hintText?.toString()?.lowercase(tr) ?: ""
+
+            val isBankingOrFinance = pkg.contains("bank") || pkg.contains("cuzdan") || pkg.contains("wallet") || pkg.contains("papara") || pkg.contains("tosla") || pkg.contains("finans")
+            val isPasswordHint = hint.contains("şifre") || hint.contains("parola") || hint.contains("pin") || hint.contains("kod") || hint.contains("password")
+
+            val isNumericClass = cls == InputType.TYPE_CLASS_NUMBER || cls == InputType.TYPE_CLASS_PHONE
+            val isNumeric = isNumberPassword || isTextPassword || (isNumericClass && (isBankingOrFinance || isPasswordHint))
+
             showPage(if (isNumeric) numericPadPage else t9Page)
         }
+    }
+
+    override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {
+        if (keyCode == KeyEvent.KEYCODE_BACK) {
+            if (::t9Page.isInitialized && t9Page.visibility != View.VISIBLE && numericPadPage.visibility != View.VISIBLE) {
+                showPage(t9Page)
+                return true
+            }
+        }
+        return super.onKeyDown(keyCode, event)
     }
 
     override fun onFinishInput() {
