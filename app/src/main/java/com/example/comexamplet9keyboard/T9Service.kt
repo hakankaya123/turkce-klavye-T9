@@ -78,6 +78,21 @@ class T9Service : InputMethodService() {
     private val userBigram = HashMap<String, HashMap<String, Int>>()
     private var learnedSinceSave = 0
     private val prefs by lazy { getSharedPreferences("t9", Context.MODE_PRIVATE) }
+    private var voiceInputEnabled: Boolean
+        get() = prefs.getBoolean("voice_input_enabled", true)
+        set(v) = prefs.edit().putBoolean("voice_input_enabled", v).apply()
+
+    private var vibrateEnabled: Boolean
+        get() = prefs.getBoolean("vibrate_enabled", true)
+        set(v) = prefs.edit().putBoolean("vibrate_enabled", v).apply()
+
+    private fun playClick() {
+        if (vibrateEnabled && keyboardRootView != null) {
+            try {
+                keyboardRootView?.performHapticFeedback(android.view.HapticFeedbackConstants.KEYBOARD_TAP)
+            } catch (e: Exception) { }
+        }
+    }
 
     // ---------- Yazma durumu ----------
     private var predictive = true                 // a✓ tuşu
@@ -102,6 +117,8 @@ class T9Service : InputMethodService() {
     private var attach: String? = null            // üst çubuktan seçilen, sonuna ek yazılabilecek kelime
     private var chipWord: String? = null          // sözlüğe eklenebilecek kelime (+ simgesi)
     private var recentUnknownWord: String? = null
+    private var stashedChip: String? = null       // alan yeniden başlarsa ekleme önerisini geri getirmek için
+    private var stashedChipTime = 0L
     private var keyboardRootView: LinearLayout? = null
     private var navBottomPx = 0
     private var keyboardFrameView: FrameLayout? = null
@@ -167,14 +184,25 @@ class T9Service : InputMethodService() {
 
     override fun onStartInputView(info: EditorInfo?, restarting: Boolean) {
         super.onStartInputView(info, restarting)
+        // Tarayıcılar (Chrome, Opera...) aynı alanı kısa aralıklarla yeniden başlatır; öneri kaybolmasın
+        val keep = if (restarting && stashedChip != null &&
+            SystemClock.uptimeMillis() - stashedChipTime < 2500) stashedChip else null
+        stashedChip = null
         resetState()
+        if (keep != null) {
+            recentUnknownWord = keep
+            updateSuggestions()
+        }
         if (::pages.isInitialized) {
             updateNumActionLabel(info)
-            showPage(if (isNumericField(info)) numPage else t9Page, toggle = false)
+            // Aynı alanın yeniden başlamasında açık sayfa değişmesin
+            if (!restarting) showPage(if (isNumericField(info)) numPage else t9Page, toggle = false)
         }
     }
 
     override fun onFinishInput() {
+        stashedChip = recentUnknownWord
+        stashedChipTime = SystemClock.uptimeMillis()
         commitWord(false)
         saveUserData()
         super.onFinishInput()
@@ -565,9 +593,11 @@ class T9Service : InputMethodService() {
             else -> null
         }
         var newAttach: String? = null
+        var committedFull: String? = null
         if (text != null) {
             val out = shown(text)
             ic.commitText(out + (if (space) " " else ""), 1)
+            committedFull = (before ?: "") + out
             if (learnIt) learn((before ?: "") + text)
             // Üst çubuktan seçildiyse boşluk bırakma, sonuna ek yazılabilsin
             if (!space && chosen != null) newAttach = (before ?: "") + out
@@ -577,7 +607,13 @@ class T9Service : InputMethodService() {
             if (space) ic.commitText(" ", 1) else newAttach = before
         }
         // Boşluk yazıldıysa: imlecin solundaki kelime sözlükte yoksa "ekle" önerisi çıksın
-        if (space) detectUnknownWord() else recentUnknownWord = null
+        if (space) {
+            // Kelime bu çağrıda yazıldıysa onu kullan; yazılmadıysa (ör. üst çubuktan seçilmişse) editöre bak
+            val full = committedFull
+            if (full != null) markUnknown(full) else detectUnknownWord()
+        } else {
+            recentUnknownWord = null
+        }
         word.setLength(0); seq.setLength(0); forced.clear(); colActive = false
         pendKey = null; symComposing = false
         cands = emptyList(); upper = false
@@ -587,19 +623,34 @@ class T9Service : InputMethodService() {
 
     // Boşluktan sonra imlecin solundaki kelime sözlükte yoksa ⊕ önerisini hazırlar.
     // Kelimenin nasıl yazıldığına (tahmin, çoklu basış, üst çubuk) bakmadan editördeki metne bakar.
+    // Ekleme önerisi gösterilebilen alan mı? E-posta ve şifre alanlarında gösterilmez.
+    // Adres çubuğu (arama için kullanılır) ve web sayfası alanları dahildir.
+    private fun chipAllowedField(): Boolean {
+        val t = currentInputEditorInfo?.inputType ?: 0
+        if (t != 0 && (t and InputType.TYPE_MASK_CLASS) != InputType.TYPE_CLASS_TEXT) return false
+        return when (t and InputType.TYPE_MASK_VARIATION) {
+            InputType.TYPE_TEXT_VARIATION_EMAIL_ADDRESS,
+            InputType.TYPE_TEXT_VARIATION_WEB_EMAIL_ADDRESS,
+            InputType.TYPE_TEXT_VARIATION_PASSWORD,
+            InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD,
+            InputType.TYPE_TEXT_VARIATION_WEB_PASSWORD -> false
+            else -> true
+        }
+    }
+
+    // Az önce yazılan kelime sözlükte yoksa ⊕ önerisini hazırlar
+    private fun markUnknown(typed: String) {
+        recentUnknownWord = null
+        if (!chipAllowedField()) return
+        val w = typed.lowercase(tr)
+        if (w.length < 2 || !w.all { charToDigit.containsKey(it) } || wordSet.contains(w)) return
+        recentUnknownWord = typed
+    }
+
     private fun detectUnknownWord() {
         recentUnknownWord = null
         val ic = currentInputConnection ?: return
-        val t = currentInputEditorInfo?.inputType ?: 0
-        if ((t and InputType.TYPE_MASK_CLASS) != InputType.TYPE_CLASS_TEXT) return
-        when (t and InputType.TYPE_MASK_VARIATION) {
-            InputType.TYPE_TEXT_VARIATION_EMAIL_ADDRESS,
-            InputType.TYPE_TEXT_VARIATION_WEB_EMAIL_ADDRESS,
-            InputType.TYPE_TEXT_VARIATION_URI,
-            InputType.TYPE_TEXT_VARIATION_PASSWORD,
-            InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD,
-            InputType.TYPE_TEXT_VARIATION_WEB_PASSWORD -> return
-        }
+        if (!chipAllowedField()) return
         val before = ic.getTextBeforeCursor(80, 0)?.toString() ?: return
         if (!before.endsWith(" ")) return
         val trimmed = before.trimEnd(' ')
@@ -641,6 +692,10 @@ class T9Service : InputMethodService() {
     // Uzun basış: Google sesle yazma açılır (TouchPal'daki gibi). Konuşulan metni o klavye doğrudan alana yazar,
     // bitince klavyeye geri dönülür. Etkin bir "sesli giriş" klavyesi bulunamazsa ayar ekranı açılır.
     private fun startVoiceInput() {
+        if (!voiceInputEnabled) {
+            android.widget.Toast.makeText(this, "Sesle yazma kapalı (Menü ayarlarından açabilirsiniz)", android.widget.Toast.LENGTH_SHORT).show()
+            return
+        }
         commitWord(false)
         attach = null
         val imm = getSystemService(INPUT_METHOD_SERVICE) as InputMethodManager
@@ -1080,18 +1135,18 @@ class T9Service : InputMethodService() {
     private fun bindTouch(f: View, repeat: Boolean, onLong: (() -> Unit)?, onClick: () -> Unit) {
         if (repeat) {
             val r = object : Runnable {
-                override fun run() { onClick(); handler.postDelayed(this, 55) }
+                override fun run() { playClick(); onClick(); handler.postDelayed(this, 55) }
             }
             f.setOnTouchListener { v, e ->
                 when (e.actionMasked) {
-                    MotionEvent.ACTION_DOWN -> { v.alpha = 0.6f; onClick(); handler.postDelayed(r, 400) }
+                    MotionEvent.ACTION_DOWN -> { v.alpha = 0.6f; playClick(); onClick(); handler.postDelayed(r, 400) }
                     MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> { v.alpha = 1f; handler.removeCallbacks(r) }
                 }
                 true
             }
         } else {
-            f.setOnClickListener { onClick() }
-            if (onLong != null) f.setOnLongClickListener { onLong(); true }
+            f.setOnClickListener { playClick(); onClick() }
+            if (onLong != null) f.setOnLongClickListener { playClick(); onLong(); true }
         }
     }
 
@@ -1646,7 +1701,7 @@ class T9Service : InputMethodService() {
 
         var predLabel: TextView? = null
 
-        fun makeTile(iconText: String, titleText: String, onClick: () -> Unit, onLabelCreated: ((TextView) -> Unit)? = null): LinearLayout {
+        fun makeTile(iconText: String?, iconKind: Int?, titleText: String, onClick: () -> Unit, onLabelCreated: ((TextView) -> Unit)? = null): LinearLayout {
             return LinearLayout(this).apply {
                 orientation = LinearLayout.VERTICAL
                 gravity = Gravity.CENTER
@@ -1655,11 +1710,17 @@ class T9Service : InputMethodService() {
                     cornerRadius = dp(8).toFloat()
                 }
                 setPadding(dp(4), dp(8), dp(4), dp(8))
-                val icon = TextView(context).apply {
-                    text = iconText
-                    textSize = 28f
-                    gravity = Gravity.CENTER
-                    setTextColor(TXT)
+                val iconView: View = if (iconKind != null) {
+                    FrameLayout(context).apply {
+                        addView(IconView(context, iconKind, TXT, dp(2).toFloat()), FrameLayout.LayoutParams(dp(36), dp(36), Gravity.CENTER))
+                    }
+                } else {
+                    TextView(context).apply {
+                        text = iconText ?: ""
+                        textSize = 28f
+                        gravity = Gravity.CENTER
+                        setTextColor(TXT)
+                    }
                 }
                 val label = TextView(context).apply {
                     text = titleText
@@ -1669,7 +1730,7 @@ class T9Service : InputMethodService() {
                     setPadding(0, dp(6), 0, 0)
                 }
                 onLabelCreated?.invoke(label)
-                addView(icon, LinearLayout.LayoutParams(MATCH_PARENT, -2))
+                addView(iconView, LinearLayout.LayoutParams(MATCH_PARENT, -2))
                 addView(label, LinearLayout.LayoutParams(MATCH_PARENT, -2))
                 setOnClickListener { onClick() }
             }
@@ -1679,24 +1740,23 @@ class T9Service : InputMethodService() {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
         }
-        val tTemalar = makeTile("👕", "Temalar", {
+        val tTemalar = makeTile("👕", null, "Temalar", {
             showPage(themePage)
         })
-        val tSes = makeTile("🎙", "Ses", {
-            try {
-                val intent = Intent(android.speech.RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
-                    putExtra(android.speech.RecognizerIntent.EXTRA_LANGUAGE_MODEL, android.speech.RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-                    flags = Intent.FLAG_ACTIVITY_NEW_TASK
-                }
-                startActivity(intent)
-            } catch (e: Exception) {
-                android.widget.Toast.makeText(this, "Sesli giriş açılamadı", android.widget.Toast.LENGTH_SHORT).show()
-            }
+        var sesLabel: TextView? = null
+        val tSes = makeTile(null, IconView.MIC, if (voiceInputEnabled) "Sesle Yazma AÇIK" else "Sesle Yazma KAPALI", {
+            voiceInputEnabled = !voiceInputEnabled
+            sesLabel?.text = if (voiceInputEnabled) "Sesle Yazma AÇIK" else "Sesle Yazma KAPALI"
+            sesLabel?.setTextColor(if (voiceInputEnabled) ACCENT else ICON)
+            android.widget.Toast.makeText(this, if (voiceInputEnabled) "Sesle Yazma AÇIK" else "Sesle Yazma KAPALI", android.widget.Toast.LENGTH_SHORT).show()
+        }, onLabelCreated = { lbl ->
+            sesLabel = lbl
+            lbl.setTextColor(if (voiceInputEnabled) ACCENT else ICON)
         })
-        val tBoyut = makeTile("⤢", "Yeniden Boyutlandır", {
+        val tBoyut = makeTile("⤢", null, "Yeniden Boyutlandır", {
             showResizeOverlay()
         })
-        val tDuzen = makeTile("⌨", "düzen", {
+        val tDuzen = makeTile("⌨", null, "Düzen", {
             showPage(t9Page)
         })
         listOf(tTemalar, tSes, tBoyut, tDuzen).forEach {
@@ -1708,7 +1768,7 @@ class T9Service : InputMethodService() {
             gravity = Gravity.CENTER_VERTICAL
             setPadding(0, dp(14), 0, 0)
         }
-        val tTahmin = makeTile("🕮", if (predictive) "Tahmin AÇIK" else "Tahmin KAPALI", {
+        val tTahmin = makeTile("🕮", null, if (predictive) "Tahmin AÇIK" else "Tahmin KAPALI", {
             predictive = !predictive
             updatePredLook()
             predLabel?.text = if (predictive) "Tahmin AÇIK" else "Tahmin KAPALI"
@@ -1720,28 +1780,21 @@ class T9Service : InputMethodService() {
             predLabel = lbl
             lbl.setTextColor(if (predictive) ACCENT else ICON)
         })
-        val tDil = makeTile("🌐", "Dil", {
+        val tDil = makeTile("🌐", null, "Dil", {
             (getSystemService(INPUT_METHOD_SERVICE) as InputMethodManager).showInputMethodPicker()
         })
-        val tPano = makeTile("📋", "Pano", {
+        val tPano = makeTile("📋", null, "Pano", {
             showPage(clipPage)
         })
-        val tAyarlar = makeTile("⚙", "Ayarlar", {
-            try {
-                val intent = Intent(android.provider.Settings.ACTION_INPUT_METHOD_SETTINGS).apply {
-                    flags = Intent.FLAG_ACTIVITY_NEW_TASK
-                }
-                startActivity(intent)
-            } catch (e: Exception) {
-                try {
-                    val intent = Intent(android.provider.Settings.ACTION_SETTINGS).apply {
-                        flags = Intent.FLAG_ACTIVITY_NEW_TASK
-                    }
-                    startActivity(intent)
-                } catch (_: Exception) {
-                    android.widget.Toast.makeText(this, "Ayarlar açılamadı", android.widget.Toast.LENGTH_SHORT).show()
-                }
-            }
+        var ayarlarLabel: TextView? = null
+        val tAyarlar = makeTile("⚙", null, if (vibrateEnabled) "Titreşim AÇIK" else "Titreşim KAPALI", {
+            vibrateEnabled = !vibrateEnabled
+            ayarlarLabel?.text = if (vibrateEnabled) "Titreşim AÇIK" else "Titreşim KAPALI"
+            ayarlarLabel?.setTextColor(if (vibrateEnabled) ACCENT else ICON)
+            android.widget.Toast.makeText(this, if (vibrateEnabled) "Titreşim AÇIK" else "Titreşim KAPALI", android.widget.Toast.LENGTH_SHORT).show()
+        }, onLabelCreated = { lbl ->
+            ayarlarLabel = lbl
+            lbl.setTextColor(if (vibrateEnabled) ACCENT else ICON)
         })
         listOf(tTahmin, tDil, tPano, tAyarlar).forEach {
             row2.addView(it, LinearLayout.LayoutParams(0, -2, 1f))

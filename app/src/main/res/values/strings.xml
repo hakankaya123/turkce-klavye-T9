@@ -1,3 +1,4 @@
 <resources>
-    <string name="app_name">com.example.t9keyboard</string>
+    <string name="app_name">T9 KlavyeTR</string>
+    <string name="app_description">Hızlı, akıllı ve modern Türkçe T9 akıllı klavye uygulaması</string>
 </resources>
