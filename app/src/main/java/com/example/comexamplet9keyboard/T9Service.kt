@@ -51,6 +51,8 @@ class T9Service : InputMethodService() {
     private var SHIFTOFF = Color.parseColor("#7FA8A3")     // ⇧ kapalıyken
     private var lightTheme = false
     private lateinit var themePage: View
+    private lateinit var numPage: View
+    private var numActionLabel: TextView? = null
 
     // ---------- T9 harf grupları ----------
     private val groups = mapOf(
@@ -123,7 +125,6 @@ class T9Service : InputMethodService() {
     private lateinit var cursorPage: View
     private lateinit var clipPage: View
     private lateinit var settingsPage: View
-    private lateinit var numericPadPage: View
     private lateinit var clipLeft: LinearLayout
     private lateinit var clipRight: LinearLayout
     private lateinit var selKey: FrameLayout
@@ -168,37 +169,9 @@ class T9Service : InputMethodService() {
         super.onStartInputView(info, restarting)
         resetState()
         if (::pages.isInitialized) {
-            val t = info?.inputType ?: 0
-            val cls = t and InputType.TYPE_MASK_CLASS
-            val variation = t and InputType.TYPE_MASK_VARIATION
-            val isNumberPassword = cls == InputType.TYPE_CLASS_NUMBER && variation == InputType.TYPE_NUMBER_VARIATION_PASSWORD
-            val isTextPassword = cls == InputType.TYPE_CLASS_TEXT && (
-                variation == InputType.TYPE_TEXT_VARIATION_PASSWORD ||
-                variation == InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD ||
-                variation == InputType.TYPE_TEXT_VARIATION_WEB_PASSWORD
-            )
-
-            val pkg = info?.packageName?.lowercase(tr) ?: ""
-            val hint = info?.hintText?.toString()?.lowercase(tr) ?: ""
-
-            val isBankingOrFinance = pkg.contains("bank") || pkg.contains("cuzdan") || pkg.contains("wallet") || pkg.contains("papara") || pkg.contains("tosla") || pkg.contains("finans")
-            val isPasswordHint = hint.contains("şifre") || hint.contains("parola") || hint.contains("pin") || hint.contains("kod") || hint.contains("password")
-
-            val isNumericClass = cls == InputType.TYPE_CLASS_NUMBER || cls == InputType.TYPE_CLASS_PHONE
-            val isNumeric = isNumberPassword || isTextPassword || (isNumericClass && (isBankingOrFinance || isPasswordHint))
-
-            showPage(if (isNumeric) numericPadPage else t9Page)
+            updateNumActionLabel(info)
+            showPage(if (isNumericField(info)) numPage else t9Page, toggle = false)
         }
-    }
-
-    override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {
-        if (keyCode == KeyEvent.KEYCODE_BACK) {
-            if (::t9Page.isInitialized && t9Page.visibility != View.VISIBLE && numericPadPage.visibility != View.VISIBLE) {
-                showPage(t9Page)
-                return true
-            }
-        }
-        return super.onKeyDown(keyCode, event)
     }
 
     override fun onFinishInput() {
@@ -1033,18 +1006,18 @@ class T9Service : InputMethodService() {
         listOf("!", "?", "'", "~").forEach { sym -> add(leftCol, key(sym) { typeText(sym) }, 1f) }
     }
 
-    private fun showPage(p: View) {
+    private fun showPage(p: View, toggle: Boolean = true) {
         commitWord(false)
         attach = null
         if (p !== cursorPage && selectMode) { selectMode = false; updateSelLook() }
-        val target = if (p !== t9Page && p.visibility == View.VISIBLE) t9Page else p
+        val target = if (toggle && p !== t9Page && p.visibility == View.VISIBLE) t9Page else p
         if (target === emojiPage) {
             loadRecentEmojis()
             populateRecentRow()
         }
         pages.forEach { it.visibility = if (it === target) View.VISIBLE else View.GONE }
         if (::hideOrReturnTool.isInitialized) {
-            val isReturn = (target !== t9Page)
+            val isReturn = (target !== t9Page && target !== numPage)
             hideOrReturnTool.text = if (isReturn) "↩" else "⌄"
             hideOrReturnTool.setTextColor(if (isReturn) ACCENT else ICON)
         }
@@ -1289,38 +1262,6 @@ class T9Service : InputMethodService() {
         add(b, key("2/2", accent = true) { showPage(sym1) }, 1.5f)
         add(b, enterKey(), 1.5f)
         add(page, b, 1f)
-        return page
-    }
-
-    private fun buildNumericPadPage(): View {
-        val page = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        val rows = listOf(
-            listOf("+", "1", "2", "3", "⌫"),
-            listOf("-", "4", "5", "6", "↵"),
-            listOf(".", "7", "8", "9", "-"),
-            listOf("/", "*", "0", "#", "Bitti")
-        )
-        rows.forEach { r ->
-            val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-            r.forEach { symbol ->
-                val w = if (symbol == "Bitti") 1.3f else 1f
-                val btn = when (symbol) {
-                    "⌫" -> key("⌫", accent = true, repeat = true) { backspace() }
-                    "↵" -> key("↵", accent = true) { enter() }
-                    "Bitti" -> key("Bitti", accent = true, size = 18f) {
-                        val action = currentInputEditorInfo?.imeOptions?.and(EditorInfo.IME_MASK_ACTION)
-                        if (action != null && action != EditorInfo.IME_ACTION_NONE && action != EditorInfo.IME_ACTION_UNSPECIFIED) {
-                            currentInputConnection?.performEditorAction(action)
-                        } else {
-                            requestHideSelf(0)
-                        }
-                    }
-                    else -> key(symbol, size = 24f) { typeText(symbol) }
-                }
-                add(row, btn, w)
-            }
-            add(page, row, 1f)
-        }
         return page
     }
 
@@ -1812,6 +1753,84 @@ class T9Service : InputMethodService() {
         return page
     }
 
+    // ---------- Rakam sayfası (sayı / telefon / PIN alanlarında otomatik açılır) ----------
+
+    private fun isNumericField(info: EditorInfo?): Boolean {
+        val cls = (info?.inputType ?: 0) and InputType.TYPE_MASK_CLASS
+        return cls == InputType.TYPE_CLASS_NUMBER ||
+            cls == InputType.TYPE_CLASS_PHONE ||
+            cls == InputType.TYPE_CLASS_DATETIME
+    }
+
+    // Sağ alttaki tuşun yazısı alanın eylemine göre değişir: Bitti, Git, İleri, Ara, Gönder
+    private fun updateNumActionLabel(info: EditorInfo?) {
+        val lbl: String = run {
+            if (info == null) return@run "↵"
+            val custom = info.actionLabel
+            if (!custom.isNullOrEmpty()) return@run custom.toString()
+            when (info.imeOptions and EditorInfo.IME_MASK_ACTION) {
+                EditorInfo.IME_ACTION_DONE -> "Bitti"
+                EditorInfo.IME_ACTION_GO -> "Git"
+                EditorInfo.IME_ACTION_NEXT -> "İleri"
+                EditorInfo.IME_ACTION_SEARCH -> "Ara"
+                EditorInfo.IME_ACTION_SEND -> "Gönder"
+                EditorInfo.IME_ACTION_PREVIOUS -> "Geri"
+                else -> "↵"
+            }
+        }
+        numActionLabel?.apply {
+            text = lbl
+            textSize = if (lbl == "↵") 26f else 16f
+        }
+    }
+
+    // Rakamlar: tür bilgisi olmayan (özel PIN) alanlara tuş olayı olarak, diğerlerine metin olarak gider
+    private fun typeNum(ch: String) {
+        val t = currentInputEditorInfo?.inputType ?: 0
+        if (t == 0 && ch.length == 1 && ch[0] in '0'..'9') {
+            commitWord(false)
+            sendDownUpKeyEvents(KeyEvent.KEYCODE_0 + (ch[0] - '0'))
+        } else {
+            typeText(ch)
+        }
+    }
+
+    private fun numBackspace() {
+        if ((currentInputEditorInfo?.inputType ?: 0) == 0) {
+            sendDownUpKeyEvents(KeyEvent.KEYCODE_DEL)
+        } else {
+            backspace()
+        }
+    }
+
+    // Alanın bir eylemi varsa (Bitti, Git...) onu çalıştırır, yoksa Enter gönderir
+    private fun numAction() {
+        val ei = currentInputEditorInfo
+        val a = (ei?.imeOptions ?: 0) and EditorInfo.IME_MASK_ACTION
+        if (a != EditorInfo.IME_ACTION_NONE && a != EditorInfo.IME_ACTION_UNSPECIFIED) editorAction() else enter()
+    }
+
+    private fun buildNumPage(): View {
+        val page = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        fun digit(d: String) = key(d, size = 28f) { typeNum(d) }
+        fun sym(s: String) = key(s, accent = true, bg = DIM, size = 24f) { typeNum(s) }
+        fun row(vararg v: View): LinearLayout {
+            val r = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+            v.forEachIndexed { i, view -> add(r, view, if (i == 0 || i == v.size - 1) 0.85f else 1f) }
+            return r
+        }
+        val back = key("↩", accent = true, bg = DIM, size = 26f) { showPage(t9Page) }
+        val space = iconKey(IconView.SPACE) { currentInputConnection?.commitText(" ", 1) }
+        val action = key("↵", accent = true, bg = DIM, size = 26f) { numAction() }
+        numActionLabel = action.tag as? TextView
+        add(page, row(sym("+"), digit("1"), digit("2"), digit("3"),
+            key("⌫", accent = true, bg = DIM, repeat = true) { numBackspace() }), 1f)
+        add(page, row(sym("-"), digit("4"), digit("5"), digit("6"), back), 1f)
+        add(page, row(sym("."), digit("7"), digit("8"), digit("9"), space), 1f)
+        add(page, row(sym("/"), sym("*"), digit("0"), sym("#"), action), 1f)
+        return page
+    }
+
     // ---------- Temalar (Koyu / Beyaz) ----------
 
     private fun applyTheme() {
@@ -1943,16 +1962,22 @@ class T9Service : InputMethodService() {
             setTextColor(ICON); setOnClickListener { f() }
         }
         val hideBtn = tool("⌄") {
-            if (::t9Page.isInitialized && t9Page.visibility != View.VISIBLE) {
+            if (::t9Page.isInitialized && t9Page.visibility != View.VISIBLE && numPage.visibility != View.VISIBLE) {
                 showPage(t9Page)
             } else {
                 requestHideSelf(0)
             }
         }
+        fun iconTool(kind: Int, f: () -> Unit): FrameLayout {
+            val fv = FrameLayout(this)
+            fv.addView(IconView(this, kind, ICON, dp(2).toFloat()), FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT))
+            fv.setOnClickListener { f() }
+            return fv
+        }
         hideOrReturnTool = hideBtn
         listOf(
             tool("☰") { showPage(settingsPage) },
-            tool("I") { showPage(cursorPage) },
+            iconTool(IconView.CURSOR) { showPage(cursorPage) },
             tool("📋") { showPage(clipPage) },
             tool("☺") { showPage(emojiPage) },
             hideBtn
@@ -1988,8 +2013,8 @@ class T9Service : InputMethodService() {
         clipPage = buildClipPage()
         settingsPage = buildSettingsPage()
         themePage = buildThemePage()
-        numericPadPage = buildNumericPadPage()
-        pages = listOf(t9Page, sym1, sym2, emojiPage, cursorPage, clipPage, settingsPage, themePage, numericPadPage)
+        numPage = buildNumPage()
+        pages = listOf(t9Page, sym1, sym2, emojiPage, cursorPage, clipPage, settingsPage, themePage, numPage)
         val content = FrameLayout(this)
         contentLayoutView = content
         pages.forEach { content.addView(it, FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT)) }
@@ -2268,7 +2293,9 @@ private class IconView(ctx: Context, private var kind: Int, color: Int, strokePx
 
     // Alt satıra geç oku (↵): kalın ve büyük
     private fun drawEnter(canvas: Canvas, cx: Float, cy: Float) {
-        val m = minOf(width, height).toFloat()
+        val m = minOf(width, height).toFloat() * 0.6f
+        val oldWidth = paint.strokeWidth
+        paint.strokeWidth = oldWidth * 1.5f
         val line = Path().apply {
             moveTo(cx + 0.26f * m, cy - 0.22f * m)
             lineTo(cx + 0.26f * m, cy + 0.06f * m)
@@ -2281,6 +2308,30 @@ private class IconView(ctx: Context, private var kind: Int, color: Int, strokePx
             lineTo(cx - 0.06f * m, cy + 0.28f * m)
         }
         canvas.drawPath(head, paint)
+        paint.strokeWidth = oldWidth
+    }
+
+    private fun drawCursor(canvas: Canvas, cx: Float, cy: Float) {
+        val m = minOf(width, height).toFloat() * 0.7f
+        canvas.drawLine(cx, cy - 0.32f * m, cx, cy + 0.32f * m, paint)
+        canvas.drawLine(cx - 0.12f * m, cy - 0.32f * m, cx + 0.12f * m, cy - 0.32f * m, paint)
+        canvas.drawLine(cx - 0.12f * m, cy + 0.32f * m, cx + 0.12f * m, cy + 0.32f * m, paint)
+
+        val leftArrow = Path().apply {
+            moveTo(cx - 0.28f * m, cy - 0.15f * m)
+            lineTo(cx - 0.15f * m, cy)
+            lineTo(cx - 0.28f * m, cy + 0.15f * m)
+            close()
+        }
+        canvas.drawPath(leftArrow, fillPaint)
+
+        val rightArrow = Path().apply {
+            moveTo(cx + 0.28f * m, cy - 0.15f * m)
+            lineTo(cx + 0.15f * m, cy)
+            lineTo(cx + 0.28f * m, cy + 0.15f * m)
+            close()
+        }
+        canvas.drawPath(rightArrow, fillPaint)
     }
 
     override fun onDraw(canvas: Canvas) {
@@ -2292,6 +2343,7 @@ private class IconView(ctx: Context, private var kind: Int, color: Int, strokePx
             SHIFT_ON -> { drawShift(canvas, cx, cy, true, false); return }
             SHIFT_CAPS -> { drawShift(canvas, cx, cy, true, true); return }
             ENTER -> { drawEnter(canvas, cx, cy); return }
+            CURSOR -> { drawCursor(canvas, cx, cy); return }
         }
         val r = minOf(width, height) * 0.16f
         val p = Path()
@@ -2319,6 +2371,7 @@ private class IconView(ctx: Context, private var kind: Int, color: Int, strokePx
         const val SHIFT_ON = 7
         const val SHIFT_CAPS = 8
         const val ENTER = 9
+        const val CURSOR = 10
     }
 }
 
